@@ -2,6 +2,7 @@ import json
 import datetime
 from io import BytesIO
 from oauth2client.service_account import ServiceAccountCredentials
+from django.contrib.auth.models import Group
 from django.shortcuts import get_object_or_404, redirect, render, reverse
 from django.conf import settings
 from django.views.decorators.cache import cache_page
@@ -15,19 +16,22 @@ try:
 except ImportError:  # fallback for Wagtail <2.0
     from wagtail.wagtailcore.models import Site
 
+
 def get_access_token(ga_key_filepath):
     # from https://ga-dev-tools.appspot.com/embed-api/server-side-authorization/
     # Defines a method to get an access token from the credentials object.
     # The access token is automatically refreshed if it has expired.
 
     # The scope for the OAuth2 request.
-    SCOPE = 'https://www.googleapis.com/auth/analytics.readonly'
+    SCOPE = "https://www.googleapis.com/auth/analytics.readonly"
 
     # Construct a credentials objects from the key data and OAuth2 scope.
     _credentials = ServiceAccountCredentials.from_json_keyfile_name(
-        ga_key_filepath, SCOPE)
+        ga_key_filepath, SCOPE
+    )
 
     return _credentials.get_access_token().access_token
+
 
 def get_access_token_from_str(ga_key_content):
     # from https://ga-dev-tools.appspot.com/embed-api/server-side-authorization/
@@ -35,55 +39,74 @@ def get_access_token_from_str(ga_key_content):
     # The access token is automatically refreshed if it has expired.
 
     # The scope for the OAuth2 request.
-    SCOPE = 'https://www.googleapis.com/auth/analytics.readonly'
+    SCOPE = "https://www.googleapis.com/auth/analytics.readonly"
 
     # Construct a credentials objects from the key data and OAuth2 scope.
-    keyDict = json.loads(ga_key_content.replace('\n', '').replace('\r', ''))
-    _credentials = ServiceAccountCredentials.from_json_keyfile_dict(
-        keyDict, SCOPE)
+    keyDict = json.loads(ga_key_content.replace("\n", "").replace("\r", ""))
+    _credentials = ServiceAccountCredentials.from_json_keyfile_dict(keyDict, SCOPE)
 
     return _credentials.get_access_token().access_token
+
 
 @cache_page(3600)
 def token(request):
     # return a cached access token to ajax clients
-    if (hasattr(settings, 'GA_KEY_CONTENT') and settings.GA_KEY_CONTENT != ''):
+    if hasattr(settings, "GA_KEY_CONTENT") and settings.GA_KEY_CONTENT != "":
         access_token = get_access_token_from_str(settings.GA_KEY_CONTENT)
     else:
         access_token = get_access_token(settings.GA_KEY_FILEPATH)
 
     return HttpResponse(access_token)
 
+
 def dashboard(request):
-    initial_start_date = (timezone.now() - datetime.timedelta(days=30)).strftime("%Y-%m-%d")
+    initial_start_date = (timezone.now() - datetime.timedelta(days=30)).strftime(
+        "%Y-%m-%d"
+    )
     ga_view_id = None
     current_site_id = None
 
-    if 'site_id' in request.GET:
-        site_id = request.GET.get('site_id')
+    if "site_id" in request.GET:
+        site_id = request.GET.get("site_id")
         site = get_object_or_404(Site, id=site_id)
         current_site_id = site.id
         try:
             ga_view_id = site.siteanalyticssettings.google_view_id
         except AttributeError:
-            raise Http404("No Google Analytics Settings are associated with \
-                Site with id {}".format(site_id))
+            raise Http404(
+                "No Google Analytics Settings are associated with \
+                Site with id {}".format(
+                    site_id
+                )
+            )
     else:
         try:
             ga_view_id = request.site.siteanalyticssettings.google_view_id
         except AttributeError:
             ga_view_id = settings.GA_VIEW_ID
+    sites = Site.objects.none()
+    if request.user.is_superuser:
+        sites = Site.objects.all()
+    elif Group.objects.filter(
+        user__id=request.user.id, institution=request.institution
+    ):
+        sites = Site.objects.filter(institution=request.institution)
 
-    return render(request, 'wagalytics/dashboard.html', {
-        'ga_view_id': ga_view_id,
-        'initial_start_date': initial_start_date,
-        'wagtail_sites': Site.objects.all(),
-        'current_site_id': current_site_id
-    })
+    return render(
+        request,
+        "wagalytics/dashboard.html",
+        {
+            "ga_view_id": ga_view_id,
+            "initial_start_date": initial_start_date,
+            "wagtail_sites": sites,
+            "current_site_id": current_site_id,
+        },
+    )
+
 
 def export(request):
     # Get JSON string posted to `data`
-    raw_data = request.POST.get('data')
+    raw_data = request.POST.get("data")
 
     # Reject a request without data
     if not raw_data:
@@ -95,7 +118,7 @@ def export(request):
     # Clean up session data
     for n in data["sessions"]:
         # Convert dates into datetime.date objects
-        n[0] = datetime.datetime.strptime(n[0], '%Y%m%d').strftime("%Y-%m-%d")
+        n[0] = datetime.datetime.strptime(n[0], "%Y%m%d").strftime("%Y-%m-%d")
         # Convert session counts into integers
         n[2] = int(n[2])
         # Second key is just the index, which isn't needed
@@ -117,8 +140,10 @@ def export(request):
     save_data(io, ods)
 
     # Set response metadata
-    response = HttpResponse(content_type='application/vnd.oasis.opendocument.spreadsheet')
-    response['Content-Disposition'] = 'attachment; filename="wagalytics.ods"'
+    response = HttpResponse(
+        content_type="application/vnd.oasis.opendocument.spreadsheet"
+    )
+    response["Content-Disposition"] = 'attachment; filename="wagalytics.ods"'
 
     # Write spreadsheet into response
     response.write(io.getvalue())
